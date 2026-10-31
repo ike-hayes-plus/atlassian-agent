@@ -1,0 +1,128 @@
+# 本地 Jira + Confluence + PostgreSQL 示例（Jira / Confluence 11.x）。
+# 复制为 docker-compose.yml 后按需改密码与路径。
+#
+# 数据库（同一 Postgres 实例，Jira / Confluence 各用独立库与用户）：
+#   Jira:        库 jiradb  用户 jira        → POSTGRES_* / JIRA_DATABASE_*
+#   Confluence:  库 confdb  用户 confluence  → CONF_* / ATL_JDBC_*（由 conf-db-init 自动创建）
+#
+# 准备 jar：
+#   mvn package -DskipTests
+#   mkdir -p init/jira
+#   cp target/atlassian-agent-jar-with-dependencies.jar init/jira/atlassian-agent.jar
+#
+# 启动：docker compose up -d   （会先 healthy Postgres，再跑 conf-db-init，再起 Jira/Confluence）
+# 访问：Jira http://127.0.0.1:18080  |  Confluence http://127.0.0.1:18090
+# Base URL：http://127.0.0.1:18080/ 与 http://127.0.0.1:18090/（与浏览器一致，勿混用 localhost）
+# Confluence 许可（容器内，-p conf 默认 DC）：
+#   docker exec -it confluence java -jar /opt/atlassian/confluence/atlassian-agent.jar \
+#     -p conf -m you@example.com -o Org -n Name -s <Setup 页 Server ID>
+# Jira↔Confluence 互跳：应用链接 + OAuth，两边同名用户；详见上级仓库 docs/JIRA-CONFLUENCE-SSO.md（若已 clone 整套环境）
+#
+# 说明：映射 18080:8080 时 Jira 容器内 Gadget feed 自检可能告警，一般不影响本机使用。
+# 语言：compose 设 LANG/JVM zh_CN；Confluence 另禁浏览器语言抢优先级（-Dconfluence.browser.language.enabled=false）。
+# 界面仍英文时：后台「常规配置 → 语言」确认为中文（中国）；登录用户再在「个人设置 → 语言」选中文；改 compose 后需 recreate 容器。
+# 若安装时在「创建管理员」报 System Error：多为 confdb 空库 + 向导跳步；停 confluence，备份删除 data/confluence，重新从首页走完安装（见 README 常见问题）。
+
+name: atlassian-agent-jira-example
+
+services:
+  jira-db:
+    image: postgres:16-alpine
+    container_name: jira-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: jiradb
+      POSTGRES_USER: jira
+      POSTGRES_PASSWORD: change-me-jira-db-password
+    # 不映射 5432 到宿主机；仅 compose 内网通过服务名 jira-db:5432 访问
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "jira", "-d", "jiradb"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  conf-db-init:
+    image: postgres:16-alpine
+    depends_on:
+      jira-db:
+        condition: service_healthy
+    environment:
+      PGHOST: jira-db
+      PGPORT: "5432"
+      PGUSER: jira
+      PGPASSWORD: change-me-jira-db-password
+      CONF_DB: confdb
+      CONF_USER: confluence
+      CONF_PASSWORD: change-me-confluence-db-password
+    volumes:
+      - ./scripts/create-confdb.sh:/scripts/create-confdb.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/create-confdb.sh"]
+    restart: "no"
+
+  jira:
+    image: atlassian/jira-software:11.3.0
+    container_name: jira
+    restart: unless-stopped
+    depends_on:
+      jira-db:
+        condition: service_healthy
+    ports:
+      - "18080:8080"
+    environment:
+      JVM_MINIMUM_MEMORY: 1024m
+      JVM_MAXIMUM_MEMORY: 2048m
+      JIRA_DATABASE_URL: jdbc:postgresql://jira-db:5432/jiradb
+      JIRA_DATABASE_USER: jira
+      JIRA_DATABASE_PASSWORD: change-me-jira-db-password
+      LANG: zh_CN.UTF-8
+      LANGUAGE: zh_CN:zh
+      LC_ALL: zh_CN.UTF-8
+      CATALINA_OPTS: "-javaagent:/opt/atlassian/jira/atlassian-agent.jar -Duser.language=zh -Duser.country=CN"
+    volumes:
+      - ./data/jira:/var/atlassian/application-data/jira
+      - ./init/jira/atlassian-agent.jar:/opt/atlassian/jira/atlassian-agent.jar:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8080'"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  confluence:
+    image: atlassian/confluence:11.0.0
+    container_name: confluence
+    restart: unless-stopped
+    depends_on:
+      jira-db:
+        condition: service_healthy
+      conf-db-init:
+        condition: service_completed_successfully
+    ports:
+      - "18090:8090"
+    environment:
+      ATL_JDBC_URL: jdbc:postgresql://jira-db:5432/confdb
+      ATL_JDBC_USER: confluence
+      ATL_JDBC_PASSWORD: change-me-confluence-db-password
+      ATL_DB_TYPE: postgresql
+      JVM_MINIMUM_MEMORY: 1024m
+      JVM_MAXIMUM_MEMORY: 2048m
+      ATL_PROXY_NAME: 127.0.0.1
+      ATL_PROXY_PORT: 18090
+      ATL_TOMCAT_SCHEME: http
+      ATL_TOMCAT_SECURE: "false"
+      LANG: zh_CN.UTF-8
+      LANGUAGE: zh_CN:zh
+      LC_ALL: zh_CN.UTF-8
+      CATALINA_OPTS: "-javaagent:/opt/atlassian/confluence/atlassian-agent.jar -Duser.language=zh -Duser.country=CN -Dconfluence.browser.language.enabled=false"
+    volumes:
+      - ./data/confluence:/var/atlassian/application-data/confluence
+      - ./init/jira/atlassian-agent.jar:/opt/atlassian/confluence/atlassian-agent.jar:ro
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8090'"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 180s
