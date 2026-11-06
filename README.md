@@ -118,6 +118,6 @@ docker exec -it <容器名> java -jar /opt/atlassian/confluence/atlassian-agent.
 
 ## 申明
 
-- 仅供个人学习研究，**不得用于商业用途**；商业使用请向 [Atlassian](https://www.atlassian.com) 购买正版。
+- 仅供个人学习研究，**不得用于商业用途**；商业使用请购买正版。
 - 本项目采用 [GPL-3.0](LICENSE) 开源。
 - `src/main/resources/dsa*.pem` 为 **内置测试用签名密钥**（与 agent 配套），仅供本地/学习环境，勿当作生产机密管理。
